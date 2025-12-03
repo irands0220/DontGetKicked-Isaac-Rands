@@ -6,13 +6,45 @@ library(workflows)
 library(ranger)
 library(themis)
 
-# --- READ DATA ---
+# ============================================================
+# 1. READ DATA
+# ============================================================
 trainData <- vroom("DontGetKicked/OG_Download/training.csv", show_col_types = FALSE) %>%
   mutate(IsBadBuy = as.factor(IsBadBuy))
 
 testData <- vroom("DontGetKicked/OG_Download/test.csv", show_col_types = FALSE)
 
-# --- RECIPE ---
+# ============================================================
+# 2. FIX: CLEAN MMR COLUMNS (NULL → NA, FORCE NUMERIC)
+# ============================================================
+clean_columns <- c(
+  "MMRAcquisitionAuctionAveragePrice",
+  "MMRAcquisitionAuctionCleanPrice",
+  "MMRAcquisitionRetailAveragePrice",
+  "MMRAcquisitonRetailCleanPrice",
+  "MMRCurrentAuctionAveragePrice",
+  "MMRCurrentAuctionCleanPrice",
+  "MMRCurrentRetailAveragePrice",
+  "MMRCurrentRetailCleanPrice"
+)
+
+fix_mmr_cols <- function(df) {
+  df %>%
+    # Step 1: convert to character (avoids na_if type issues)
+    mutate(across(all_of(clean_columns), as.character)) %>%
+    # Step 2: replace "NULL" and empty strings with NA
+    mutate(across(all_of(clean_columns), ~ na_if(., "NULL"))) %>%
+    mutate(across(all_of(clean_columns), ~ na_if(., ""))) %>%
+    # Step 3: convert to numeric
+    mutate(across(all_of(clean_columns), as.numeric))
+}
+
+trainData <- fix_mmr_cols(trainData)
+testData  <- fix_mmr_cols(testData)
+
+# ============================================================
+# 3. RECIPE
+# ============================================================
 my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
   step_string2factor(all_nominal_predictors()) %>%
   step_impute_mode(all_nominal_predictors()) %>%
@@ -20,34 +52,39 @@ my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
   step_other(all_nominal_predictors(), threshold = 0.005) %>%
   step_normalize(all_numeric_predictors())
 
-
-# --- RANDOM FOREST MODEL (NO TUNING) ---
+# ============================================================
+# 4. RANDOM FOREST MODEL (NO TUNING)
+# ============================================================
 rf_model <- rand_forest(
   mtry = 7,
   min_n = 10,
-  trees = 100
+  trees = 500
 ) %>%
   set_mode("classification") %>%
   set_engine("ranger", importance = "impurity")
 
-
-# --- WORKFLOW ---
+# ============================================================
+# 5. WORKFLOW
+# ============================================================
 rf_workflow <- workflow() %>%
   add_recipe(my_recipe) %>%
   add_model(rf_model)
 
-
-# --- FIT FINAL MODEL ---
+# ============================================================
+# 6. FIT FINAL MODEL
+# ============================================================
 rf_fit <- rf_workflow %>%
   fit(data = trainData)
 
-
-# --- PREDICT ON TEST SET ---
+# ============================================================
+# 7. PREDICT ON TEST SET
+# ============================================================
 preds <- predict(rf_fit, new_data = testData, type = "prob") %>%
   bind_cols(testData %>% select(RefId)) %>%
   select(RefId, .pred_1) %>%
   rename(IsBadBuy = .pred_1)
 
-
-# --- WRITE SUBMISSION FILE ---
-vroom_write(preds, "RF_predictions.csv", delim = ",")
+# ============================================================
+# 8. WRITE SUBMISSION FILE
+# ============================================================
+vroom_write(preds, "/Users/isaacrands/Documents/Stats/Stat_348/DontGetKicked/Submission files/RF_predictions.csv", delim = ",")
