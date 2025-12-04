@@ -15,7 +15,7 @@ trainData <- vroom("DontGetKicked/OG_Download/training.csv", show_col_types = FA
 testData <- vroom("DontGetKicked/OG_Download/test.csv", show_col_types = FALSE)
 
 # ============================================================
-# 2. FIX: CLEAN MMR COLUMNS (NULL → NA, FORCE NUMERIC)
+# 2. CLEAN MMR COLUMNS
 # ============================================================
 clean_columns <- c(
   "MMRAcquisitionAuctionAveragePrice",
@@ -30,12 +30,9 @@ clean_columns <- c(
 
 fix_mmr_cols <- function(df) {
   df %>%
-    # Step 1: convert to character (avoids na_if type issues)
     mutate(across(all_of(clean_columns), as.character)) %>%
-    # Step 2: replace "NULL" and empty strings with NA
     mutate(across(all_of(clean_columns), ~ na_if(., "NULL"))) %>%
     mutate(across(all_of(clean_columns), ~ na_if(., ""))) %>%
-    # Step 3: convert to numeric
     mutate(across(all_of(clean_columns), as.numeric))
 }
 
@@ -53,11 +50,11 @@ my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
   step_normalize(all_numeric_predictors())
 
 # ============================================================
-# 4. RANDOM FOREST MODEL (NO TUNING)
+# 4. RANDOM FOREST MODEL (TUNEABLE)
 # ============================================================
 rf_model <- rand_forest(
-  mtry = 7,
-  min_n = 10,
+  mtry = tune(),
+  min_n = tune(),
   trees = 500
 ) %>%
   set_mode("classification") %>%
@@ -71,15 +68,47 @@ rf_workflow <- workflow() %>%
   add_model(rf_model)
 
 # ============================================================
-# 6. FIT FINAL MODEL
+# 6. CROSS-VALIDATION FOLDS
 # ============================================================
-rf_fit <- rf_workflow %>%
+folds <- vfold_cv(trainData, v = 5, repeats = 1)  # smaller v for speed; can increase to 10
+
+# ============================================================
+# 7. GRID FOR TUNING
+# ============================================================
+tuning_grid <- grid_regular(
+  mtry(range = c(5, 20)),
+  min_n(range = c(5, 30)),
+  levels = 5
+)
+
+# ============================================================
+# 8. TUNE GRID
+# ============================================================
+set.seed(123)
+cv_results <- tune_grid(
+  rf_workflow,
+  resamples = folds,
+  grid = tuning_grid,
+  metrics = metric_set(roc_auc)
+)
+
+# ============================================================
+# 9. SELECT BEST PARAMETERS
+# ============================================================
+best_tune <- cv_results %>%
+  select_best(metric = "roc_auc")
+
+# ============================================================
+# 10. FINAL FIT
+# ============================================================
+rf_final <- rf_workflow %>%
+  finalize_workflow(best_tune) %>%
   fit(data = trainData)
 
 # ============================================================
-# 7. PREDICT ON TEST SET
+# 11. PREDICT ON TEST SET
 # ============================================================
-preds <- predict(rf_fit, new_data = testData, type = "prob") %>%
+preds <- predict(rf_final, new_data = testData, type = "prob") %>%
   bind_cols(testData %>% select(RefId)) %>%
   select(RefId, .pred_1) %>%
   rename(IsBadBuy = .pred_1)
@@ -87,4 +116,4 @@ preds <- predict(rf_fit, new_data = testData, type = "prob") %>%
 # ============================================================
 # 8. WRITE SUBMISSION FILE
 # ============================================================
-vroom_write(preds, "/Users/isaacrands/Documents/Stats/Stat_348/DontGetKicked/Submission files/RF_predictions.csv", delim = ",")
+vroom_write(preds, "/Users/isaacrands/Documents/Stats/Stat_348/DontGetKicked/Submission files/RF_predictions2.csv", delim = ",")
