@@ -55,7 +55,7 @@ my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
 rf_model <- rand_forest(
   mtry = tune(),
   min_n = tune(),
-  trees = 500
+  trees = 200
 ) %>%
   set_mode("classification") %>%
   set_engine("ranger", importance = "impurity")
@@ -78,7 +78,7 @@ folds <- vfold_cv(trainData, v = 5, repeats = 1)  # smaller v for speed; can inc
 tuning_grid <- grid_regular(
   mtry(range = c(5, 20)),
   min_n(range = c(5, 30)),
-  levels = 5
+  levels = 2
 )
 
 # ============================================================
