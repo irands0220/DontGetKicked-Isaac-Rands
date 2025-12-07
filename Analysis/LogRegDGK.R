@@ -7,7 +7,7 @@ library(ranger)
 library(themis)
 
 # ============================================================
-# 1. READ DATA
+# 1. READ DATA (Same as before)
 # ============================================================
 trainData <- vroom("DontGetKicked/OG_Download/training.csv", show_col_types = FALSE) %>%
   mutate(IsBadBuy = as.factor(IsBadBuy))
@@ -15,7 +15,7 @@ trainData <- vroom("DontGetKicked/OG_Download/training.csv", show_col_types = FA
 testData <- vroom("DontGetKicked/OG_Download/test.csv", show_col_types = FALSE)
 
 # ============================================================
-# 2. CLEAN MMR COLUMNS
+# 2. CLEAN MMR COLUMNS (Same as before)
 # ============================================================
 clean_columns <- c(
   "MMRAcquisitionAuctionAveragePrice",
@@ -40,7 +40,7 @@ trainData <- fix_mmr_cols(trainData)
 testData  <- fix_mmr_cols(testData)
 
 # ============================================================
-# 3. RECIPE
+# 3. RECIPE (Same as before)
 # ============================================================
 my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
   step_string2factor(all_nominal_predictors()) %>%
@@ -48,73 +48,38 @@ my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
   step_impute_median(all_numeric_predictors()) %>%
   step_other(all_nominal_predictors(), threshold = 0.005) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_upsample(IsBadBuy, over_ratio = 1)
+  step_upsample(IsBadBuy, over_ratio = 1) # Retaining upsampling for class balance
 
 # ============================================================
-# 4. RANDOM FOREST MODEL (TUNEABLE)
+# 4. LOGISTIC REGRESSION MODEL
 # ============================================================
-rf_model <- rand_forest(
-  mtry = tune(),
-  min_n = tune(),
-  trees = 200
-) %>%
+log_reg_model <- logistic_reg() %>%
   set_mode("classification") %>%
-  set_engine("ranger", importance = "impurity")
+  set_engine("glm") # glm is the standard engine for logistic regression
 
 # ============================================================
 # 5. WORKFLOW
 # ============================================================
-rf_workflow <- workflow() %>%
+log_reg_workflow <- workflow() %>%
   add_recipe(my_recipe) %>%
-  add_model(rf_model)
+  add_model(log_reg_model)
 
 # ============================================================
-# 6. CROSS-VALIDATION FOLDS
+# 6. FINAL FIT (No tuning required for standard logistic regression)
 # ============================================================
-folds <- vfold_cv(trainData, v = 5, repeats = 1)  # smaller v for speed; can increase to 10
-
-# ============================================================
-# 7. GRID FOR TUNING
-# ============================================================
-tuning_grid <- grid_regular(
-  mtry(range = c(5, 20)),
-  min_n(range = c(5, 30)),
-  levels = 3
-)
-
-# ============================================================
-# 8. TUNE GRID
-# ============================================================
-set.seed(123)
-cv_results <- tune_grid(
-  rf_workflow,
-  resamples = folds,
-  grid = tuning_grid,
-  metrics = metric_set(roc_auc)
-)
-
-# ============================================================
-# 9. SELECT BEST PARAMETERS
-# ============================================================
-best_tune <- cv_results %>%
-  select_best(metric = "roc_auc")
-
-# ============================================================
-# 10. FINAL FIT
-# ============================================================
-rf_final <- rf_workflow %>%
-  finalize_workflow(best_tune) %>%
+log_reg_final <- log_reg_workflow %>%
   fit(data = trainData)
 
 # ============================================================
-# 11. PREDICT ON TEST SET
+# 7. PREDICT ON TEST SET
 # ============================================================
-preds <- predict(rf_final, new_data = testData, type = "prob") %>%
+preds_logreg <- predict(log_reg_final, new_data = testData, type = "prob") %>%
   bind_cols(testData %>% select(RefId)) %>%
   select(RefId, .pred_1) %>%
   rename(IsBadBuy = .pred_1)
 
 # ============================================================
-# 12. WRITE SUBMISSION FILE
+# 8. WRITE SUBMISSION FILE
 # ============================================================
-vroom_write(preds, "/Users/isaacrands/Documents/Stats/Stat_348/DontGetKicked/Submission files/RF_predictionsFinal.csv", delim = ",")
+vroom_write(preds_logreg, "/Users/isaacrands/Documents/Stats/Stat_348/DontGetKicked/Submission files/LogReg_predictions.csv", delim = ",")
+

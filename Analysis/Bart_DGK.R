@@ -3,20 +3,17 @@ library(tidymodels)
 library(embed)
 library(vroom)
 library(workflows)
-library(ranger)
 library(themis)
+library(dbarts)
 
 # ============================================================
-# 1. READ DATA
+# 1. READ + CLEAN DATA
 # ============================================================
 trainData <- vroom("DontGetKicked/OG_Download/training.csv", show_col_types = FALSE) %>%
   mutate(IsBadBuy = as.factor(IsBadBuy))
 
 testData <- vroom("DontGetKicked/OG_Download/test.csv", show_col_types = FALSE)
 
-# ============================================================
-# 2. CLEAN MMR COLUMNS
-# ============================================================
 clean_columns <- c(
   "MMRAcquisitionAuctionAveragePrice",
   "MMRAcquisitionAuctionCleanPrice",
@@ -40,9 +37,9 @@ trainData <- fix_mmr_cols(trainData)
 testData  <- fix_mmr_cols(testData)
 
 # ============================================================
-# 3. RECIPE
+# 2. RECIPE
 # ============================================================
-my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
+bart_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
   step_string2factor(all_nominal_predictors()) %>%
   step_impute_mode(all_nominal_predictors()) %>%
   step_impute_median(all_numeric_predictors()) %>%
@@ -51,70 +48,59 @@ my_recipe <- recipe(IsBadBuy ~ ., data = trainData) %>%
   step_upsample(IsBadBuy, over_ratio = 1)
 
 # ============================================================
-# 4. RANDOM FOREST MODEL (TUNEABLE)
+# 3. BART MODEL
 # ============================================================
-rf_model <- rand_forest(
-  mtry = tune(),
-  min_n = tune(),
-  trees = 200
-) %>%
-  set_mode("classification") %>%
-  set_engine("ranger", importance = "impurity")
+bart_model <- bart() %>%
+  set_engine("dbarts", ntree = 200) %>%  # fixed number of trees
+  set_mode("classification")
 
 # ============================================================
-# 5. WORKFLOW
+# 4. WORKFLOW
 # ============================================================
-rf_workflow <- workflow() %>%
-  add_recipe(my_recipe) %>%
-  add_model(rf_model)
+bart_workflow <- workflow() %>%
+  add_recipe(bart_recipe) %>%
+  add_model(bart_model)
 
 # ============================================================
-# 6. CROSS-VALIDATION FOLDS
+# 5. PARAMETER EXTRACTION & GRID (here only placeholder)
 # ============================================================
-folds <- vfold_cv(trainData, v = 5, repeats = 1)  # smaller v for speed; can increase to 10
+# BART doesn't expose tunable parameters in tidymodels for classification,
+# so we just create a dummy grid with 1 row to mimic the old workflow
+forest_params <- extract_parameter_set_dials(bart_workflow)
+forest_params <- finalize(forest_params, trainData)
+my_grid <- grid_regular(forest_params, levels = 1)
 
 # ============================================================
-# 7. GRID FOR TUNING
+# 6. 5-FOLD CROSS-VALIDATION
 # ============================================================
-tuning_grid <- grid_regular(
-  mtry(range = c(5, 20)),
-  min_n(range = c(5, 30)),
-  levels = 3
-)
+folds <- vfold_cv(trainData, v = 5)
+
+# CV results (optional, mainly for consistent workflow)
+CV_results <- bart_workflow %>%
+  fit_resamples(
+    resamples = folds,
+    metrics = metric_set(roc_auc)
+  )
 
 # ============================================================
-# 8. TUNE GRID
+# 7. FINAL FIT
 # ============================================================
-set.seed(123)
-cv_results <- tune_grid(
-  rf_workflow,
-  resamples = folds,
-  grid = tuning_grid,
-  metrics = metric_set(roc_auc)
-)
-
-# ============================================================
-# 9. SELECT BEST PARAMETERS
-# ============================================================
-best_tune <- cv_results %>%
-  select_best(metric = "roc_auc")
-
-# ============================================================
-# 10. FINAL FIT
-# ============================================================
-rf_final <- rf_workflow %>%
-  finalize_workflow(best_tune) %>%
+final_wf <- bart_workflow %>%
   fit(data = trainData)
 
 # ============================================================
-# 11. PREDICT ON TEST SET
+# 8. PREDICT ON TEST SET
 # ============================================================
-preds <- predict(rf_final, new_data = testData, type = "prob") %>%
+bart_preds <- predict(final_wf, new_data = testData, type = "prob") %>%
   bind_cols(testData %>% select(RefId)) %>%
   select(RefId, .pred_1) %>%
   rename(IsBadBuy = .pred_1)
 
 # ============================================================
-# 12. WRITE SUBMISSION FILE
+# 9. WRITE SUBMISSION FILE
 # ============================================================
-vroom_write(preds, "/Users/isaacrands/Documents/Stats/Stat_348/DontGetKicked/Submission files/RF_predictionsFinal.csv", delim = ",")
+vroom_write(
+  bart_preds,
+  "/Users/isaacrands/Documents/Stats/Stat_348/DontGetKicked/Submission files/BART_predictions.csv",
+  delim = ","
+)
